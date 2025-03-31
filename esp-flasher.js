@@ -285,7 +285,7 @@ class ESPFlasher {
             return false;
         }
 
-        this.logDebug("Attempting automatic bootloader reset sequence (DTR/RTS)...");
+        this.logDebug("Automatic bootloader reset sequence...");
 
         try {
             await this.port.setSignals({
@@ -293,14 +293,14 @@ class ESPFlasher {
                 requestToSend: false,
             });
             await this.port.setSignals({
-                dataTerminalReady: true,
+                dataTerminalReady: bootloader,
                 requestToSend: true,
             });
             await this.port.setSignals({
-                dataTerminalReady: !bootloader,
-                requestToSend: true,
+                dataTerminalReady: false,
+                requestToSend: bootloader,
             });
-            await new Promise((resolve) => setTimeout(resolve, 500));
+            await new Promise((resolve) => setTimeout(resolve, 100));
 
             return true;
         } catch (error) {
@@ -331,18 +331,18 @@ class ESPFlasher {
                 resolve();
             });
     }
-    
+
     async sync() {
         const maxRetries = 10;
         const retryDelayMs = 100; // Delay between retries
         const syncTimeoutMs = 250; // Timeout for each individual sync attempt
         let synchronized = false;
-    
+
         this.logDebug(`Attempting to synchronize (${maxRetries} attempts)...`);
-    
+
         const syncData = new Uint8Array([0x07, 0x07, 0x12, 0x20, ...Array(32).fill(0x55)]);
         const syncPacket = this.buildCommandPacket(SYNC, syncData);
-    
+
         for (let attempt = 1; attempt <= maxRetries; attempt++) {
             this.logDebug(`Sync attempt ${attempt}...`);
             try {
@@ -357,12 +357,12 @@ class ESPFlasher {
                     null, // No default callback needed here
                     syncTimeoutMs // Use a specific timeout for sync
                 );
-    
+
                 // If executeCommand resolved without throwing/rejecting:
                 this.logDebug(`Synchronized successfully on attempt ${attempt}.`);
                 synchronized = true;
                 break; // Exit the retry loop on success
-    
+
             } catch (error) {
                 this.logDebug(`Sync attempt ${attempt} failed: ${error.message}`);
                 if (attempt === maxRetries) {
@@ -374,14 +374,14 @@ class ESPFlasher {
                 await new Promise(resolve => setTimeout(resolve, retryDelayMs));
             }
         }
-    
+
         // This part only runs if synchronized was set to true
         if (!synchronized) {
             // This should technically not be reached if the error is thrown above,
             // but adding as a safeguard.
             throw new Error("Synchronization failed (unexpected state).");
         }
-    
+
         // --- Chip Detection (Runs only after successful sync) ---
         this.logDebug("Reading chip magic value...");
         let currentValue;
@@ -392,8 +392,8 @@ class ESPFlasher {
             this.logError(`Failed to read magic value after sync: ${readError}`);
             throw new Error(`Successfully synced, but failed to read chip magic value: ${readError.message}`);
         }
-    
-    
+
+
         /* Function to check if the value matches any of the magic values */
         const isMagicValue = (stub, value) => {
             if (Array.isArray(stub.magic_value)) {
@@ -402,7 +402,7 @@ class ESPFlasher {
                 return stub.magic_value === value;
             }
         };
-    
+
         let chipDetected = false;
         /* Iterate through each stub in the object */
         for (const desc in this.chip_descriptions) {
@@ -416,14 +416,14 @@ class ESPFlasher {
                 }
             }
         }
-    
+
         if (!chipDetected) {
             this.logError(`Synced, but chip magic value 0x${currentValue.toString(16)} is unknown.`);
             this.current_chip = "unknown"; // Mark as unknown
             // Depending on requirements, you might want to throw an error here
             // throw new Error(`Synced, but failed to identify chip type (Magic: 0x${currentValue.toString(16)}).`);
         }
-    
+
         // If we reached here without throwing, sync and detection (or lack thereof) is complete.
         // The function implicitly returns a resolved promise.
     }
