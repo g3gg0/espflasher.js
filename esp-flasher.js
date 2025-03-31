@@ -273,6 +273,43 @@ class ESPFlasher {
         this.disconnected && this.disconnected();
     }
 
+
+    /**
+     * Attempts to put the ESP device into bootloader mode using RTS/DTR signals.
+     * Relies on the common DTR=EN, RTS=GPIO0 circuit. May not work on all boards.
+     * @returns {Promise<boolean>} True if the sequence was sent, false if an error occurred (e.g., signals not supported).
+     */
+    async hardReset(bootloader = true) {
+        if (!this.port) {
+            this.logError("Port is not open. Cannot set signals.");
+            return false;
+        }
+
+        this.logDebug("Attempting automatic bootloader reset sequence (DTR/RTS)...");
+
+        try {
+            await this.port.setSignals({
+                dataTerminalReady: false,
+                requestToSend: false,
+            });
+            await this.port.setSignals({
+                dataTerminalReady: true,
+                requestToSend: true,
+            });
+            await this.port.setSignals({
+                dataTerminalReady: !bootloader,
+                requestToSend: true,
+            });
+            await new Promise((resolve) => setTimeout(resolve, 500));
+
+            return true;
+        } catch (error) {
+            this.logError(`Could not set signals for automatic reset: ${error}. Please ensure device is in bootloader mode manually.`);
+            return false;
+        }
+    }
+
+
     base64ToByteArray(base64) {
         const binaryString = atob(base64);
         const byteArray = new Uint8Array(binaryString.length);
@@ -294,25 +331,69 @@ class ESPFlasher {
                 resolve();
             });
     }
-
+    
     async sync() {
-        var synchronized = false;
-
-        const data = new Uint8Array([0x07, 0x07, 0x12, 0x20, ...Array(32).fill(0x55)]);
-
-        await this.executeCommand(this.buildCommandPacket(SYNC, data),
-            async (resolve, reject, responsePacket) => {
-                if (synchronized) {
-                    return;
-                }
-
-                this.logDebug(`Synchronized`);
+        const maxRetries = 10;
+        const retryDelayMs = 100; // Delay between retries
+        const syncTimeoutMs = 250; // Timeout for each individual sync attempt
+        let synchronized = false;
+    
+        this.logDebug(`Attempting to synchronize (${maxRetries} attempts)...`);
+    
+        const syncData = new Uint8Array([0x07, 0x07, 0x12, 0x20, ...Array(32).fill(0x55)]);
+        const syncPacket = this.buildCommandPacket(SYNC, syncData);
+    
+        for (let attempt = 1; attempt <= maxRetries; attempt++) {
+            this.logDebug(`Sync attempt ${attempt}...`);
+            try {
+                await this.executeCommand(
+                    syncPacket,
+                    async (resolve, reject, responsePacket) => {
+                        // The ROM bootloader responds to SYNC with 0x08 0x00 status - check value maybe?
+                        // For now, just receiving *any* response to SYNC is considered success here.
+                        // If the command times out, the catch block below handles it.
+                        resolve(); // Signal success for this attempt
+                    },
+                    null, // No default callback needed here
+                    syncTimeoutMs // Use a specific timeout for sync
+                );
+    
+                // If executeCommand resolved without throwing/rejecting:
+                this.logDebug(`Synchronized successfully on attempt ${attempt}.`);
                 synchronized = true;
-                resolve();
-            });
-
-        const currentValue = await this.readReg(this.chip_magic_addr);
-
+                break; // Exit the retry loop on success
+    
+            } catch (error) {
+                this.logDebug(`Sync attempt ${attempt} failed: ${error.message}`);
+                if (attempt === maxRetries) {
+                    this.logError(`Failed to synchronize after ${maxRetries} attempts.`);
+                    // Throw an error to indicate overall failure of the sync process
+                    throw new Error(`Failed to synchronize with device after ${maxRetries} attempts.`);
+                }
+                // Wait before the next retry
+                await new Promise(resolve => setTimeout(resolve, retryDelayMs));
+            }
+        }
+    
+        // This part only runs if synchronized was set to true
+        if (!synchronized) {
+            // This should technically not be reached if the error is thrown above,
+            // but adding as a safeguard.
+            throw new Error("Synchronization failed (unexpected state).");
+        }
+    
+        // --- Chip Detection (Runs only after successful sync) ---
+        this.logDebug("Reading chip magic value...");
+        let currentValue;
+        try {
+            // Use a slightly longer timeout for register reads if needed
+            currentValue = await this.readReg(this.chip_magic_addr);
+        } catch (readError) {
+            this.logError(`Failed to read magic value after sync: ${readError}`);
+            throw new Error(`Successfully synced, but failed to read chip magic value: ${readError.message}`);
+        }
+    
+    
         /* Function to check if the value matches any of the magic values */
         const isMagicValue = (stub, value) => {
             if (Array.isArray(stub.magic_value)) {
@@ -321,17 +402,30 @@ class ESPFlasher {
                 return stub.magic_value === value;
             }
         };
-
+    
+        let chipDetected = false;
         /* Iterate through each stub in the object */
         for (const desc in this.chip_descriptions) {
             if (this.chip_descriptions.hasOwnProperty(desc)) {
                 const checkStub = this.chip_descriptions[desc];
                 if (isMagicValue(checkStub, currentValue)) {
-                    this.logDebug(`Detected ${desc}`);
+                    this.logDebug(`Detected Chip: ${desc} (Magic: 0x${currentValue.toString(16)})`);
                     this.current_chip = desc;
+                    chipDetected = true;
+                    break; // Found the chip
                 }
             }
         }
+    
+        if (!chipDetected) {
+            this.logError(`Synced, but chip magic value 0x${currentValue.toString(16)} is unknown.`);
+            this.current_chip = "unknown"; // Mark as unknown
+            // Depending on requirements, you might want to throw an error here
+            // throw new Error(`Synced, but failed to identify chip type (Magic: 0x${currentValue.toString(16)}).`);
+        }
+    
+        // If we reached here without throwing, sync and detection (or lack thereof) is complete.
+        // The function implicitly returns a resolved promise.
     }
 
     async readMac() {
