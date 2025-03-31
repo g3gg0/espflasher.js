@@ -30,7 +30,7 @@ This flasher communicates with the ESP32's ROM bootloader and can upload a flash
 
 1.  **Browser:** A modern web browser that supports the Web Serial API (e.g., Google Chrome, Microsoft Edge, Opera).
 2.  **Hardware:** An ESP32-C3, C6, S2, or S3 device connected via USB.
-3.  **Bootloader Mode:** The ESP32 device must be put into **Serial Bootloader Mode**. This is typically done by:
+3.  **Bootloader Mode:** You may have to put the ESP32 manually into **Serial Bootloader Mode**. This is typically done by:
     *   Holding down the `BOOT` (or `IO0`) button.
     *   Pressing and releasing the `RESET` (or `EN`) button.
     *   Releasing the `BOOT` button.
